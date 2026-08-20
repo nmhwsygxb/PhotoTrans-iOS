@@ -14,7 +14,7 @@ jobs:
         run: xcodegen generate --spec project.yml
       - name: Build unsigned app
         run: |
-          xcodebuild -project PhotoTrans.xcodeproj -target PhotoTrans -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project PhotoTrans.xcodeproj -alltargets -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
       - name: Package IPA
         run: |
           mkdir -p build/ipa/Payload
