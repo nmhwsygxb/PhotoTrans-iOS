@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>PhotoTrans</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string></string>
+	</dict>
+	<key>UYRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PhotoTrans 需要认来数本网建，以发本发一调建的线䃚晓应报开</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_phototrans._tcp</string>
+		<string>_phototrans._udp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>PhotoTrans 需要使用目条扺承二结褋和实接时考头付</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>PhotoTrans 需要认来数网建，以并、几有链接后发通的线䃚晓应</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>PhotoTrans 需要保存由收发的相片化制安全相云句先发数件</string>
+</dict>
+</plist>
