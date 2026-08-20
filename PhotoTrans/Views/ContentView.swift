@@ -90,7 +90,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showQR) { MyQRView(appState: appState) }
+            .sheet(isPresented: $showQR) { MyQRView() }
             .sheet(isPresented: $showScanner) { QRScannerView { value in
                 showScanner = false
                 handleScanned(value)
