@@ -4,6 +4,14 @@ import SwiftUI
 /// and (optional) save-received-media-to-Photos toggles.
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @State private var storeReceivedToPhotos: Bool
+    @State private var warnLargeFiles: Bool
+
+    init() {
+        let s = AppSettings.loadOrCreate()
+        _storeReceivedToPhotos = State(initialValue: s.storeReceivedFilesInPhotos)
+        _warnLargeFiles = State(initialValue: s.showLargeFileWarnings)
+    }
 
     var body: some View {
         Form {
@@ -26,8 +34,16 @@ struct SettingsView: View {
             }
 
             Section("接收设置") {
-                Toggle("接收文件同步存入相册", isOn: $appState.transferService.settings.storeReceivedFilesInPhotos)
-                Toggle("大文件传输警告", isOn: $appState.transferService.settings.showLargeFileWarnings)
+                Toggle("接收文件同步存入相册", isOn: $storeReceivedToPhotos)
+                    .onChange(of: storeReceivedToPhotos) { _, newValue in
+                        appState.transferService.settings.storeReceivedFilesInPhotos = newValue
+                        appState.transferService.settings.save()
+                    }
+                Toggle("大文件传输警告", isOn: $warnLargeFiles)
+                    .onChange(of: warnLargeFiles) { _, newValue in
+                        appState.transferService.settings.showLargeFileWarnings = newValue
+                        appState.transferService.settings.save()
+                    }
             }
 
             Section("关于") {
