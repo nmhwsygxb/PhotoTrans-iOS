@@ -30,29 +30,13 @@ struct NearDevice: Sendable {
 }
 
 /// Constants for the PhotoTrans wire protocol.
+/// Compatible with Android version: text-based PT-HI handshake + HTTP PUT file transfer.
 enum PhotoTransProtocol {
     static let serviceType = "_phototrans._tcp"
     static let serviceDomain = "local."
     static let serviceInstancePrefix = "PhotoTrans-"
-    /// Magic token prefixed to every handshake frame ("PT-HI-1").
-    static let magicToken = "PT-HI-1"
-    /// 4-byte big-endian length header for the handshake payload.
-    static let protonHeaderSize = 4
-}
-
-/// Handshake frame exchanged at connection start ("PT-HI" protocol).
-struct HandshakeMessage: Codable, Sendable {
-    enum Kind: String, Codable {
-        case hello
-        case helloAck
-        case error
-    }
-    var kind: Kind
-    var deviceName: String
-    var deviceBrand: DeviceBrand
-    var appVersion: String
-    var magicToken: String = PhotoTransProtocol.magicToken
-    var payload: String?
+    /// Handshake prefix (text line, compatible with Android).
+    static let handshakePrefix = "PT-HI"
 }
 
 /// Low-level networking abstraction over NWConnection / NWListener.
@@ -97,6 +81,7 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     var settings = AppSettings()
 
     private var handshakeHandlers: [ObjectIdentifier: (NWConnection) -> Void] = [:]
+    private var pendingPeerNames: [ObjectIdentifier: String] = [:]
 
     override init() {
         super.init()
@@ -243,7 +228,9 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         performHandshake(on: connection) { [weak self] result in
             switch result {
             case .success(let conn):
-                self?.handshakeCompleteHandler?(conn)
+                // Extract peer name from the handshake context
+                let peerName = self?.pendingPeerNames[ObjectIdentifier(connection)] ?? "Unknown"
+                self?.handshakeCompleteHandler?(conn, peerName)
             case .failure(let error):
                 print("Inbound handshake failed: \(error)")
                 connection.cancel()
@@ -251,8 +238,8 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         }
     }
 
-    /// Set by TransferService to receive fully-handshaken connections.
-    var handshakeCompleteHandler: ((NWConnection) -> Void)?
+    /// Set by TransferService to receive fully-handshaken connections with peer name.
+    var handshakeCompleteHandler: ((NWConnection, String) -> Void)?
 
     // MARK: - Outbound connections
 
@@ -278,10 +265,10 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         .eraseToAnyPublisher()
     }
 
-    // MARK: - PT-HI handshake
+    // MARK: - PT-HI handshake (compatible with Android)
 
-    /// Establishes the connection, writes the "PT-HI" hello with a length
-    /// prefix, reads the peer's hello, and validates the magic token.
+    /// Establishes the connection, sends "PT-HI <deviceName>\n" and reads the
+    /// peer's reply. Compatible with the Android version's text-based handshake.
     func performHandshake(on connection: NWConnection,
                           completion: @escaping (Result<NWConnection, Error>) -> Void) {
         let key = ObjectIdentifier(connection)
@@ -313,21 +300,14 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     private func sendHello(on connection: NWConnection,
                            key: ObjectIdentifier,
                            completion: @escaping (Result<NWConnection, Error>) -> Void) {
-        let hello = HandshakeMessage(kind: .hello,
-                                     deviceName: UIDeviceHelper.current.modelName,
-                                     deviceBrand: .apple,
-                                     appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")
-        guard let body = try? JSONEncoder().encode(hello),
-              let magic = PhotoTransProtocol.magicToken.data(using: .utf8) else {
+        let deviceName = UIDeviceHelper.current.modelName
+        let handshakeLine = "\(PhotoTransProtocol.handshakePrefix) \(deviceName)\n"
+        guard let data = handshakeLine.data(using: .utf8) else {
             finishHandshake(key: key, result: .failure(TransferError.handshakeFailed("Encode failed")), connection: connection)
             return
         }
-        var frame = magic
-        var length = UInt32(body.count).bigEndian
-        frame.append(Data(bytes: &length, count: 4))
-        frame.append(body)
 
-        connection.send(content: frame, completion: .contentProcessed { [weak self] error in
+        connection.send(content: data, completion: .contentProcessed { [weak self] error in
             if let error {
                 self?.finishHandshake(key: key, result: .failure(error), connection: connection)
             } else {
@@ -339,24 +319,30 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     private func receiveHelloReply(on connection: NWConnection,
                                    key: ObjectIdentifier,
                                    completion: @escaping (Result<NWConnection, Error>) -> Void) {
-        connection.receive(minimumIncompleteLength: PhotoTransProtocol.magicToken.count,
-                           maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let error {
                 self.finishHandshake(key: key, result: .failure(error), connection: connection)
                 return
             }
-            guard let data = data, let magic = PhotoTransProtocol.magicToken.data(using: .utf8),
-                  data.count >= magic.count,
-                  data.starts(with: magic) else {
+            guard let data = data,
+                  let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  line.hasPrefix(PhotoTransProtocol.handshakePrefix) else {
                 if isComplete {
                     self.finishHandshake(key: key,
-                                         result: .failure(TransferError.handshakeFailed("Peer closed / bad magic")),
+                                         result: .failure(TransferError.handshakeFailed("Peer closed / bad handshake")),
                                          connection: connection)
                 } else {
                     self.receiveHelloReply(on: connection, key: key, completion: completion)
                 }
                 return
+            }
+            // Extract peer name from "PT-HI <name>" line
+            let peerName = line
+                .replacingOccurrences(of: PhotoTransProtocol.handshakePrefix, with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if !peerName.isEmpty {
+                self.pendingPeerNames[key] = peerName
             }
             self.finishHandshake(key: key, result: .success(connection), connection: connection)
         }
@@ -366,7 +352,10 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
                                  result: Result<NWConnection, Error>,
                                  connection: NWConnection) {
         guard let handler = handshakeHandlers.removeValue(forKey: key) else { return }
-        if case .failure = result { connection.cancel() }
+        if case .failure = result {
+            pendingPeerNames.removeValue(forKey: key)
+            connection.cancel()
+        }
         handler(result)
     }
 }
