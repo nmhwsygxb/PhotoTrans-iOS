@@ -1,28 +1,20 @@
 name: Build iOS App
+name: Build iOS App
+
+name: Build iOS App
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
 jobs:
   build-ios:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
       - name: Generate project
-        run: xcodegen generate --spec project.yml
-      - name: Build unsigned app
-        run: |
-          xcodebuild -project PhotoTrans.xcodeproj -alltargets -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
-      - name: Package IPA
-        run: |
-          mkdir -p build/ipa/Payload
-          cp -R "build/Build/Products/Release-iphoneos/PhotoTrans.app" build/ipa/Payload/
-          cd build/ipa && zip -r ../../PhotoTrans-unsigned.ipa Payload
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: PhotoTrans-unsigned-ipa
-          path: PhotoTrans-unsigned.ipa
-          retention-days: 14
+        run: xcodegen --spec project.yml
