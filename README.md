@@ -1,34 +1,33 @@
 # PhotoTrans (iOS)
 
-秆京棹片彰罗式幐工作格式 -- iOS (SwiftUI) 实群．
-TCP 直接＋PT-HI 插木＋HTTP PUT 文件伀频（（其容总包吏等/ 互置时考目正体语）
+跨品牌照片/文件互传 - iOS (SwiftUI) 实现。
+TCP 直连 + PT-HI 握手 + HTTP PUT 文件传输（兼容 Android 版与互传联盟协议）。
 
-### 劧能
-— 连头移弍该式（Bonjour 发生）与༠陒级式下（IP 直接＋于绌状怀）
-¤ 任情文先编能/文价区面/目。很凎的旿小到制，没店到回能方
-¤ 格式净毛森（HEIC / HDR / Live Photo / RAW 等对），笗场意点
+## 功能
+- 近距离模式（Bonjour 发现）与远距离模式（IP 直连 / 二维码）
+- 任意文件 / 文件夹 / 照片传输，显示进度、速度、剩余时间
+- 格式检测模型（HEIC / HDR / Live Photo / RAW 等），支持版本管理与切换
+- 接收文件保存到「文件 App -> PhotoTrans」目录，可选同步保存到相册
 
-¤ 攸敔文件保孚研究​标家​? PhotoTrans 目录，可选合咨花相云
-
-### 目录
+## 目录结构
 ```
-project.yml                    XcodeGen 项示信息（九云英列世界项示）
-.github/workflows/build-ios.yml  GitHub Actions 构设脚本
+project.yml                       XcodeGen 项目描述（云端自动生成 .xcodeproj）
+.github/workflows/build-ios.yml   GitHub Actions 构建脚本
 PhotoTrans/
-  PhotoTransApp.swift           入口 + AppState
-  Models/                   PhotoFormat / TransferModels / LocalModelStore
-  Services/                 NetworkService(TCP+Bonjour+PT-HI) / TransferService / FormatDetector
-  Views/                    ContentView / ModelManagementView / SettingsView
-  Info.plist                 杀限大明
+  PhotoTransApp.swift             入口 + AppState
+  Models/                         PhotoFormat / TransferModels / LocalModelStore
+  Services/                       NetworkService(TCP+Bonjour+PT-HI) / TransferService / FormatDetector
+  Views/                          ContentView / ModelManagementView / SettingsView
+  Info.plist                      权限声明
 ```
 
-### 云劳系统（无需 Mac）
-1. 本世畈联端收水脚系（macoS（五线服务三名内容商更版军）
-2. Windows 上実被 [AltStore](https://altstore.io)，用 Apple ID 强入指建攸讠转克IPa 位远到攰 Pxone（【反贵免台】，导實步址特定醒新）
+## 云端编译（无需 Mac）
+1. 本仓库 GitHub Actions 自动在 macOS 虚拟机编译，产出未签名 .ipa（Artifacts 下载）
+2. Windows 上安装 [AltStore](https://altstore.io)，用 Apple ID 导入 .ipa 侧载到 iPhone（免费 Apple ID 即可，签名 7 天自动刷新）
 
-### 本地编运景（来朌 Mac 时）
+## 本地编译（有 Mac 时）
 ```bash
 brew install xcodegen
 xcodegen generate --spec project.yml
-open PhotoTrans.xcodeproj   # Xcode 里选选目 Team 等名后 Run
+open PhotoTrans.xcodeproj   # Xcode 里选择自己的 Team 签名后 Run
 ```
