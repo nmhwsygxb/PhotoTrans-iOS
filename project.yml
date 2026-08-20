@@ -1,0 +1,23 @@
+name: PhotoTrans
+options:
+  bundleIdPrefix: com.phototrans
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+targets:
+  PhotoTrans:
+    type: application
+    platform: iOS
+    sources:
+      - PhotoTrans
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.phototrans.app
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: PhotoTrans/Info.plist
+        CODE_SIGNING_ALLOWED: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
