@@ -4,12 +4,12 @@ import Combine
 
 /// Owns the file-transfer pipeline on both sides (send + receive).
 ///
-/// Wire protocol (compatible with the Android build & the 互传联盟 HTTP PUT):
+/// Wire protocol (compatible with the Android build & the HTTP PUT):
 ///   Sender  ->  "PUT /<percent-encoded-name> HTTP/1.1\r\nContent-Length: <n>\r\n\r\n"
 ///   Sender  ->  <n raw file bytes>
 ///   Receiver -> "HTTP/1.1 200 OK\r\n\r\n"
 ///
-/// Handshake uses NetworkService's PT-HI frame (magic + length + JSON).
+/// Handshake uses NetworkService's PT-HI text-based protocol (compatible with Android).
 final class TransferService: NSObject, ObservableObject {
     var settings = AppSettings()
     private let modelStore: LocalModelStore
@@ -38,7 +38,8 @@ final class TransferService: NSObject, ObservableObject {
         self.formatDetector = formatDetector
         super.init()
         // Receive inbound file transfers over fully-handshaken connections.
-        networkService.handshakeCompleteHandler = { [weak self] connection in
+        networkService.handshakeCompleteHandler = { [weak self] connection, peerName in
+            self?.registerPeer(peerName)
             self?.handleInbound(connection)
         }
     }
@@ -99,7 +100,6 @@ final class TransferService: NSObject, ObservableObject {
                     // Read short response line from the receiver.
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, _, error in
                         guard let self else { return }
-                        let ok = data?.isEmpty == false && error == nil
                         self.completeTransfer(transfer)
                     }
                 })
@@ -151,7 +151,9 @@ final class TransferService: NSObject, ObservableObject {
             guard let self else { return }
             if let error { connection.cancel(); return }
             guard let data, !data.isEmpty else { connection.cancel(); return }
-            self.parseHeader(data, connection: connection)
+
+            // Assemble until we find an empty line (i.e. header terminator).
+            try? self.parseHeader(data, connection: connection)
         }
     }
 
@@ -192,8 +194,8 @@ final class TransferService: NSObject, ObservableObject {
         }
 
         // Determine how many bytes of the body arrived with the header.
-        guard let headerEndRange = data.range(of: "\r\n\r\n".data(using: .utf8)!) else { return }
-        var received = Data(data[headerEndRange.upperBound...])
+        guard let headerEnd = data.range(of: "\r\n\r\n".data(using: .utf8)!) else { return }
+        var received = Data(data[headerEnd.upperBound...])
 
         // Safety cap.
         if contentLength > settings.maxReceiveFileSize {
@@ -207,7 +209,7 @@ final class TransferService: NSObject, ObservableObject {
             self.startSpeedTimer(for: transfer)
         }
 
-        // Write body to Documents/PhotoTrans.
+        // Write body to Documents/PhotoTrans
         let destDir = Self.receiveDirectory()
         let destURL = destDir.appendingPathComponent(fileName)
         try? fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
