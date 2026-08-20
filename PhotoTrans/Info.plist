@@ -27,7 +27,7 @@
 		<key>UIColorName</key>
 		<string></string>
 	</dict>
-	<key>UYRequiredDeviceCapabilities</key>
+	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>armv7</string>
 	</array>
@@ -35,18 +35,25 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>PhotoTrans 需要认来数本网建，以发本发一调建的线䃚晓应报开</string>
+	<string>PhotoTrans 需要访问本地网络，以发现附近设备并传输照片/文件</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_phototrans._tcp</string>
 		<string>_phototrans._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>PhotoTrans 需要使用目条扺承二结褋和实接时考头付</string>
+	<string>PhotoTrans 需要使用相机扫描二维码以连接对方设备</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>PhotoTrans 需要认来数网建，以并、几有链接后发通的线䃚晓应</string>
+	<string>PhotoTrans 需要访问相册，以选择并发送照片</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>PhotoTrans 需要保存由收发的相片化制安全相云句先发数件</string>
+	<string>PhotoTrans 需要保存接收到的照片到相册</string>
 </dict>
 </plist>
