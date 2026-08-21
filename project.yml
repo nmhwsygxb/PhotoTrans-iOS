@@ -4,10 +4,6 @@ options:
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
-  # Generate an old project format that Xcode 15 (macos-14 runner) can open.
-  # Newer XcodeGen defaults to Xcode 16 format (objectVersion 77) which
-  # fails with "future Xcode project file format (77)".
-  xcodeVersion: "15.0"
 settings:
   base:
     SWIFT_VERSION: "5.0"
