@@ -201,10 +201,6 @@ final class TransferService: NSObject, ObservableObject {
             return
         }
 
-        // Verify we do not silently clobber the receive-dir bookkeeping.
-        _ = formatDetector
-        _ = modelStore
-
         let transfer = TransferProgress(name: fileName, totalBytes: contentLength, phase: .running)
         DispatchQueue.main.async {
             self.activeTransfers.append(transfer)
