@@ -23,18 +23,23 @@ final class DeviceListModel: ObservableObject {
 
     init(networkService: NetworkServiceProtocol) {
         self.networkService = networkService
-        networkService.$discoveredDevices
+        // The protocol exposes device changes through objectWillChange + the
+        // published `discoveredDevices`; re-reading on any change is cheap.
+        networkService.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] devices in
-                self?.nearDevices = devices.map {
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.nearDevices = self.networkService.discoveredDevices.map {
                     NearDeviceRow(name: $0.name, endpoint: $0.endpoint)
                 }
-                self?.isSearching = !devices.isEmpty
+                self.isSearching = !self.nearDevices.isEmpty
             }
             .store(in: &cancellables)
     }
 
     func refresh() {
+        // NWBrowser re-fires browseResultsChangedHandler on cancel/restart logic;
+        // simplest refresh is to restart discovery.
         networkService.stopDiscovery()
         networkService.startDiscovery()
     }
@@ -48,7 +53,7 @@ struct ContentView: View {
     @State private var mode: TransferMode = .near
     @State private var ipInput = ""
     @State private var peerHost: String?
-    @State private var peerPort: UInt16 = 47600
+    @State private var peerPort: UInt16 = PhotoTransProtocol.defaultTransferPort
     @State private var peerName: String?
     @State private var showQR = false
     @State private var showScanner = false
@@ -97,7 +102,8 @@ struct ContentView: View {
             } }
             .sheet(isPresented: $showDocumentPicker) {
                 DocumentPicker { urls in
-                    if peerHost != nil {
+                    let connected = peerHost != nil
+                    if connected {
                         pickedURLs = urls
                         appState.transferService.sendFiles(urls: urls)
                         toast = "已发送 \(urls.count) 个文件"
@@ -288,7 +294,7 @@ struct ContentView: View {
         }
         // Bonjour endpoint without explicit ip:port — resolve via the hostname.
         let host = device.endpoint.host?.debugDescription ?? ""
-        networkConnect(host: host, port: 47600)
+        networkConnect(host: host, port: PhotoTransProtocol.defaultTransferPort)
     }
 
     private func connectFar() {
@@ -336,7 +342,7 @@ struct ContentView: View {
 
     private func disconnect() {
         peerHost = nil
-        peerPort = 47600
+        peerPort = PhotoTransProtocol.defaultTransferPort
         peerName = nil
         appState.transferService.cancelActiveTransfers()
         toast = "已断开连接"
@@ -351,7 +357,7 @@ struct ContentView: View {
             if let port = UInt16(portStr) {
                 return (host, port)
             }
-            return (host, 47600)
+            return (host, PhotoTransProtocol.defaultTransferPort)
         }
         if trimmed.contains(":") {
             let parts = trimmed.split(separator: ":")
@@ -359,7 +365,7 @@ struct ContentView: View {
                 return (String(parts[0]), port)
             }
         }
-        return (trimmed, 47600)
+        return (trimmed, PhotoTransProtocol.defaultTransferPort)
     }
 
     @State private var cancellables = Set<AnyCancellable>()
@@ -405,7 +411,7 @@ struct MyQRView: View {
 
     private var qrContent: String {
         let ip = appState.networkService.localHostIP ?? "unknown"
-        return "\(ip):47600"
+        return "\(ip):\(PhotoTransProtocol.defaultTransferPort)"
     }
 
     private var qrImage: UIImage? {
