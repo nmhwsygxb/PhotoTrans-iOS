@@ -73,8 +73,9 @@ struct FileInfo: Sendable, Identifiable, Equatable {
 }
 
 /// Live status of an in-flight transfer. Published so the progress view can
-/// observe it via Combine.
-struct TransferProgress: Sendable, Identifiable, Equatable {
+/// observe it via Combine. Equality is by identity (`id`), so the struct does
+/// not declare Equatable (synthesis is impossible with property wrappers).
+struct TransferProgress: Sendable, Identifiable {
     let id: UUID
     let name: String
     let totalBytes: Int64
