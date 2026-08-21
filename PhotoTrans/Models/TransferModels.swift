@@ -79,21 +79,23 @@ struct TransferProgress: Sendable, Identifiable {
     let id: UUID
     let name: String
     let totalBytes: Int64
-    @Atomic var transferredBytes: Int64
-    @Atomic var currentSpeedBytesPerSecond: Double
-    @Atomic var averageSpeedBytesPerSecond: Double
-    @Atomic var startedAt: Date
+    @Atomic var transferredBytes: Int64 = 0
+    @Atomic var currentSpeedBytesPerSecond: Double = 0
+    @Atomic var averageSpeedBytesPerSecond: Double = 0
+    @Atomic var startedAt: Date = Date()
     var phase: TransferPhase
     var errorDescription: String?
 
     init(id: UUID = UUID(),
          name: String,
          totalBytes: Int64,
-         phase: TransferPhase = .idle) {
+         phase: TransferPhase = .idle,
+         errorDescription: String? = nil) {
         self.id = id
         self.name = name
         self.totalBytes = totalBytes
         self.phase = phase
+        self.errorDescription = errorDescription
     }
 
     var fractionComplete: Double {
