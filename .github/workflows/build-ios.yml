@@ -24,7 +24,7 @@ jobs:
 
       - name: Build unsigned app
         run: |
-          xcodebuild -project PhotoTrans.xcodeproj -alltargets -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1
+          xcodebuild -project PhotoTrans.xcodeproj -scheme PhotoTrans -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1
 
       - name: Package IPA
         run: |
