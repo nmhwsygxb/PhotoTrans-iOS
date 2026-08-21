@@ -23,9 +23,9 @@ final class DeviceListModel: ObservableObject {
 
     init(networkService: NetworkServiceProtocol) {
         self.networkService = networkService
-        // The protocol exposes device changes through objectWillChange + the
-        // published `discoveredDevices`; re-reading on any change is cheap.
-        networkService.objectWillChange
+        // The protocol exposes device changes through a type-erased publisher;
+        // re-reading the published value on any change is cheap.
+        networkService.discoveredDevicesPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
