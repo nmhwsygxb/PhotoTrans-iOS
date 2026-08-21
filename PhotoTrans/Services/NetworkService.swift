@@ -164,7 +164,11 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
             // Bind a FIXED port so that Android / HarmonyOS peers (which always
             // connect to 47808) can reach this device. A random port would only
             // be discoverable via Bonjour, breaking cross-platform transfer.
-            let list = try NWListener(using: .tcp, on: PhotoTransProtocol.defaultTransferPort)
+            guard let nwPort = NWEndpoint.Port(rawValue: PhotoTransProtocol.defaultTransferPort) else {
+                print("Invalid transfer port")
+                return
+            }
+            let list = try NWListener(using: .tcp, on: nwPort)
             listener = list
             port = list.port?.rawValue ?? PhotoTransProtocol.defaultTransferPort
             list.service = NWListener.Service(name: deviceName, type: PhotoTransProtocol.serviceType)
