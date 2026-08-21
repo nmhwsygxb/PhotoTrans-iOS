@@ -37,7 +37,6 @@ enum PhotoFormat: String, CaseIterable, Codable, Identifiable {
         case .heic: return .apple
         case .arw:  return .sony
         case .nef:  return .nikon
-        case .dng:  return .adobe
         default:    return nil
         }
     }
@@ -55,7 +54,7 @@ enum PhotoFormat: String, CaseIterable, Codable, Identifiable {
 }
 
 /// Device brands that PhotoTrans models are trained to recognize.
-enum DeviceBrand: String, Codable, CaseIterable, Identifiable {
+enum DeviceBrand: String, Codable, CaseIterable, Identifiable, Equatable {
     case oppo, huawei, samsung, apple, xiaomi, vivo, sony, nikon, other
 
     var id: String { rawValue }
@@ -88,7 +87,7 @@ struct FormatMatch: Sendable {
 }
 
 /// A single signature rule contributed by one model version.
-struct FormatSignature: Codable, Identifiable, Sendable {
+struct FormatSignature: Codable, Identifiable, Sendable, Equatable {
     var id: String { "\(format.rawValue):\(priority).\(tag)" }
 
     let format: PhotoFormat
