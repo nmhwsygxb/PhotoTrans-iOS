@@ -2,7 +2,8 @@ name: PhotoTrans
 options:
   bundleIdPrefix: com.phototrans
   deploymentTarget:
-    iOS: "15.0"
+    # NavigationStack / LabeledContent used by the UI require iOS 16+.
+    iOS: "16.0"
   createIntermediateGroups: true
 settings:
   base:
