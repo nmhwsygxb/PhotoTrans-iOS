@@ -44,7 +44,7 @@ struct FormatDetector: Sendable {
         signatures.append(contentsOf: Self.builtinHardSignatures)
 
         // 3) Extension based fallback hint.
-        let extClue: PhotoFormat? = (fileExtension.map(Self.formatFromExtension) ?? nil).flatMap { $0 }
+        let extClue = fileExtension.flatMap(Self.formatFromExtension)
         if let ext = fileExtension, !ext.isEmpty {
             clues.append("extension .\(ext)")
         }
@@ -117,7 +117,6 @@ struct FormatDetector: Sendable {
     private static func hexToBytes(_ hex: String) -> [UInt8?]? {
         var result: [UInt8?] = []
         var iterator = hex.makeIterator()
-        var pending: Character?
         while let char = iterator.next() {
             if char == "?" {
                 // Wildcard: consumed two chars as one '?' pair.
@@ -196,8 +195,6 @@ struct FormatDetector: Sendable {
     private struct XMPResult {
         var format: PhotoFormat?
         var device: String?
-        var date: Date?
-        var dateString: String?
     }
 
     /// Scans the first chunk of the file for XMP packets (often embedded in
@@ -225,25 +222,11 @@ struct FormatDetector: Sendable {
         }
         result.device = device
 
-        // Capture date.
-        if let range = xml.range(of: "photoshop:DateCreated>") ?? xml.range(of: "exif:DateTimeOriginal>"),
-           let close = xml[range.upperBound...].range(of: "<") {
-            let value = String(xml[range.upperBound..<close.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            result.dateString = value
-        }
-
-        // Infer brand from the camera name region.
-        if let device {
-            let lower = device.lowercased()
-            if lower.contains("samsung") { result.format = nil }
-        }
-        // Format inference from XMP 'getM:' software tag when compressed image
-        // is not encoded in a standard container.
+        // Format inference from XMP GDepth/GPano/GImage cues found in some
+        // HDR imagery captures (e.g. HEIF HDR on recent Android brands).
         if xml.contains("GDepth") || xml.contains("GPano") || xml.contains("GImage") {
             result.format = .hdr
         }
-        // An XMP packet inside a container usually just refines container;
-        // we intentionally return nil for format here except HDR cues.
         return result
     }
 }
@@ -256,7 +239,6 @@ extension PhotoFormat {
         case .png:       return .png
         case .gif:       return .gif
         case .heic:      return .heic
-        case .heic as PhotoFormat: return .heic
         default:         return .data
         }
     }
