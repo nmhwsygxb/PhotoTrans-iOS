@@ -5,7 +5,7 @@ import Combine
 /// A discovered or manually added remote device.
 struct DeviceInfo: Identifiable, Hashable, Sendable {
     var id: String {
-        serviceName ?? addressString ?? host ?? UUID().uuidString
+        serviceName ?? ipAddress ?? host ?? UUID().uuidString
     }
     var distanceMode: TransferMode
     var serviceName: String?
@@ -30,13 +30,17 @@ struct NearDevice: Sendable {
 }
 
 /// Constants for the PhotoTrans wire protocol.
-/// Compatible with Android version: text-based PT-HI handshake + HTTP PUT file transfer.
+/// Compatible with Android / HarmonyOS versions: text-based PT-HI handshake +
+/// HTTP PUT file transfer, fixed TCP port 47808.
 enum PhotoTransProtocol {
     static let serviceType = "_phototrans._tcp"
     static let serviceDomain = "local."
     static let serviceInstancePrefix = "PhotoTrans-"
     /// Handshake prefix (text line, compatible with Android).
     static let handshakePrefix = "PT-HI"
+    /// Default TCP port for file transfer, shared with Android / HarmonyOS
+    /// (Android: WifiDirectTransport.TRANSFER_PORT = 47808).
+    static let defaultTransferPort: UInt16 = 47808
 }
 
 /// Low-level networking abstraction over NWConnection / NWListener.
@@ -51,6 +55,7 @@ enum PhotoTransProtocol {
 /// `TransferService` can run the file-transfer payload over the same socket.
 protocol NetworkServiceProtocol: ObservableObject {
     var discoveredDevices: [NearDevice] { get }
+    var discoveredDevicesPublisher: AnyPublisher<[NearDevice], Never> { get }
     var isAdvertising: Bool { get }
     var isDiscovering: Bool { get }
     var localHostIP: String? { get }
@@ -69,7 +74,11 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     @Published private(set) var isAdvertising = false
     @Published private(set) var isDiscovering = false
     @Published private(set) var localHostIP: String?
-    @Published private(set) var port: UInt16 = 47600
+    @Published private(set) var port: UInt16 = PhotoTransProtocol.defaultTransferPort
+
+    var discoveredDevicesPublisher: AnyPublisher<[NearDevice], Never> {
+        $discoveredDevices.eraseToAnyPublisher()
+    }
 
     private var listener: NWListener?
     private var browser: NWBrowser?
@@ -77,10 +86,10 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     private let connectionQueue = DispatchQueue(label: "com.phototrans.network.connections", qos: .userInitiated)
 
     /// Settings reference for handshake timeouts; mutated externally.
-    weak var onSettingsChanged: ((DispatchQueue) -> Void)?
+    var onSettingsChanged: ((DispatchQueue) -> Void)?
     var settings = AppSettings()
 
-    private var handshakeHandlers: [ObjectIdentifier: (NWConnection) -> Void] = [:]
+    private var handshakeHandlers: [ObjectIdentifier: (Result<NWConnection, Error>) -> Void] = [:]
     private var pendingPeerNames: [ObjectIdentifier: String] = [:]
 
     override init() {
@@ -130,7 +139,7 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
                                socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
                     let ip = String(cString: host)
                     candidates.append(ip)
-                    if isPrivateIPv4(ip) { addresses.append(ip) }
+                    if self.isPrivateIPv4(ip) { addresses.append(ip) }
                 }
             }
             completion((addresses.count > 0 ? addresses.first : candidates.first))
@@ -152,9 +161,12 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     func startAdvertising(deviceName: String, brand: DeviceBrand) {
         guard !isAdvertising else { return }
         do {
-            let list = try NWListener(using: .tcp, on: .any)
+            // Bind a FIXED port so that Android / HarmonyOS peers (which always
+            // connect to 47808) can reach this device. A random port would only
+            // be discoverable via Bonjour, breaking cross-platform transfer.
+            let list = try NWListener(using: .tcp, on: PhotoTransProtocol.defaultTransferPort)
             listener = list
-            port = list.port?.rawValue ?? 47600
+            port = list.port?.rawValue ?? PhotoTransProtocol.defaultTransferPort
             list.service = NWListener.Service(name: deviceName, type: PhotoTransProtocol.serviceType)
             list.newConnectionHandler = { [weak self] connection in
                 self?.handleIncoming(connection)
@@ -263,6 +275,26 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
             }
         }
         .eraseToAnyPublisher()
+    }
+
+    // MARK: - HTTP PUT framing
+
+    /// Builds the HTTP/1.1 PUT request header frame used for file transfer.
+    ///
+    /// Compatible with the Android / 互传联盟 wire format:
+    /// `PUT /<percent-encoded-name> HTTP/1.1\r\nContent-Length: <size>\r\n\r\n`
+    static func buildHttpPutHeader(fileName: String, contentLength: Int64) -> Data {
+        let encodedName = fileName
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
+        let header = "PUT /\(encodedName) HTTP/1.1\r\n" +
+                     "Content-Length: \(contentLength)\r\n" +
+                     "\r\n"
+        return Data(header.utf8)
+    }
+
+    /// Builds the HTTP/1.1 success/error response frame.
+    static func buildHttpResponse(status: String = "200 OK") -> Data {
+        Data("HTTP/1.1 \(status)\r\n\r\n".utf8)
     }
 
     // MARK: - PT-HI handshake (compatible with Android)
