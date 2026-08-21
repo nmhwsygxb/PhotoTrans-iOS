@@ -55,8 +55,8 @@ final class LocalModelStore: ObservableObject {
         try? fileManager.createDirectory(at: versionsDirectory, withIntermediateDirectories: true)
 
         loadIndex()
+        loadInstalled()
         seedBundledModelsIfNeeded()
-        restoreActiveModel()
     }
 
     /// Currently active model; falls back to the first installed version.
@@ -87,12 +87,6 @@ final class LocalModelStore: ObservableObject {
         let index = Index(activeModelId: activeModelId)
         guard let data = try? JSONEncoder().encode(index) else { return }
         try? data.write(to: indexURL, options: .atomic)
-    }
-
-    func restoreActiveModel() {
-        if installedVersions.first(where: { $0.id == activeModelId }) == nil {
-            activeModelId = installedVersions.first?.id
-        }
     }
 
     private func persist(_ version: ModelVersion) {
