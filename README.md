@@ -3,9 +3,11 @@
 > 跨品牌照片/文件无线传输 - iOS (SwiftUI) 实现。
 > TCP 直连 + PT-HI 握手 + HTTP PUT 文件传输（与 Android 和 HarmonyOS 协议兼容）。
 
+![Build iOS App](https://github.com/nmhwsygxb/PhotoTrans-iOS/actions/workflows/build-ios.yml/badge.svg)
+
 ## 功能
 
-- 近场 (Bonjour 发现) 和远场 (IP 直连) 两种连接模式
+- 近场 (Bonjour 发现) 和远场 (IP/扫码直连) 两种连接模式
 - 文件 / 文件夹 / 照片批量传输
 - 智能格式识别 (HEIC / HDR / Live Photo / RAW 等)
 - 自动保存到相册
@@ -25,18 +27,20 @@ PhotoTrans/
 
 ## 构建方式
 
-### 云构建 (推荐，无需 Mac)
+### 云构建 (无需 Mac)
 
-仓库已配置 GitHub Actions 自动构建。触发后：
-1. 在 macOS 14 runner 上使用 xcodegen 生成项目
-2. xcodebuild 编译为未签名 IPA
-3. 上传到 Artifacts，保留 14 天
+仓库已配置 GitHub Actions（macOS 15 + Xcode 16）自动构建未签名 IPA：
+
+1. `push` 到 `main` 或手动触发 `workflow_dispatch`
+2. xcodegen 生成项目 → xcodebuild 编译（CODE_SIGNING_ALLOWED=NO）
+3. 构建产物 `PhotoTrans-unsigned-ipa` 上传到 Artifacts，保留 14 天
 
 ### 获取 IPA 并侧载到 iPhone
 
-1. **下载 IPA**：进入 GitHub Actions 页面，选择最近的 build 运行，在 Artifacts 中下载 `PhotoTrans-unsigned-ipa`
-2. **解压**：解压后得到一个 `.ipa` 文件
-3. **侧载**：在 Windows 上安装 [AltStore](https://altstore.io/)，将 iPhone 连接到电脑，使用 Apple ID 登录后，将 `.ipa` 拖入 AltStore 安装
+1. 打开 [Actions 页面](https://github.com/nmhwsygxb/PhotoTrans-iOS/actions)，选择最新的成功运行
+2. 在 Artifacts 下载 `PhotoTrans-unsigned-ipa`，解压得到 `.ipa`
+3. 用 [AltStore](https://altstore.io/) / Sideloadly 等工具，以你的 Apple ID 签名并安装
+   （未签名 IPA 无法直接安装，需自签）
 
 ### 本地构建 (需要 Mac)
 
@@ -58,6 +62,7 @@ R→S:  PT-HI <deviceName>\n
 S→R:  PUT /<filename> HTTP/1.1\r\nContent-Length: <n>\r\n\r\n<raw bytes>
 R→S:  HTTP/1.1 200 OK\r\n\r\n
 ```
+默认端口：**47808**
 
 ## 格式识别
 
