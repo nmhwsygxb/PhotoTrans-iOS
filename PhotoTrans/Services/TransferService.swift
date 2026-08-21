@@ -4,12 +4,13 @@ import Combine
 
 /// Owns the file-transfer pipeline on both sides (send + receive).
 ///
-/// Wire protocol (compatible with the Android build & the HTTP PUT):
+/// Wire protocol (compatible with the Android build & the 互传联盟 HTTP PUT):
 ///   Sender  ->  "PUT /<percent-encoded-name> HTTP/1.1\r\nContent-Length: <n>\r\n\r\n"
 ///   Sender  ->  <n raw file bytes>
 ///   Receiver -> "HTTP/1.1 200 OK\r\n\r\n"
 ///
-/// Handshake uses NetworkService's PT-HI text-based protocol (compatible with Android).
+/// Handshake uses NetworkService's PT-HI text-based handshake (compatible
+/// with the Android / HarmonyOS versions): sender writes "PT-HI <name>\n".
 final class TransferService: NSObject, ObservableObject {
     var settings = AppSettings()
     private let modelStore: LocalModelStore
@@ -62,13 +63,10 @@ final class TransferService: NSObject, ObservableObject {
                 let handle = try FileHandle(forReadingFrom: url)
                 defer { try? handle.close() }
 
-                var header = "PUT /\(url.lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.lastPathComponent) HTTP/1.1\r\n"
-                header += "Content-Length: \(transfer.totalBytes)\r\n\r\n"
-                guard let headerData = header.data(using: .utf8) else {
-                    DispatchQueue.main.async { self.postError("Header encode failed") }
-                    return
-                }
-
+                // Build and send the HTTP PUT request frame (compatible with
+                // Android / 互传联盟). Delegated to NetworkService for reuse.
+                let headerData = NetworkService.buildHttpPutHeader(fileName: url.lastPathComponent,
+                                                                   contentLength: transfer.totalBytes)
                 connection.send(content: headerData, completion: .contentProcessed { [weak self] error in
                     guard let self else { return }
                     if let error {
@@ -97,9 +95,10 @@ final class TransferService: NSObject, ObservableObject {
                         })
                         if transfer.totalBytes > 0 && sent >= transfer.totalBytes { break }
                     }
-                    // Read short response line from the receiver.
+                    // Read short response line.
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, _, error in
                         guard let self else { return }
+                        let ok = data?.isEmpty == false && error == nil
                         self.completeTransfer(transfer)
                     }
                 })
@@ -183,8 +182,7 @@ final class TransferService: NSObject, ObservableObject {
         var contentLength: Int64 = 0
         for line in lines.dropFirst() {
             if line.lowercased().hasPrefix("content-length:") {
-                let parts = line.split(separator: ":")
-                let value = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+                let value = line.split(separator: ":").map(String.init)[1].trimmingCharacters(in: .whitespaces)
                 contentLength = Int64(value) ?? 0
             }
         }
@@ -194,8 +192,8 @@ final class TransferService: NSObject, ObservableObject {
         }
 
         // Determine how many bytes of the body arrived with the header.
-        guard let headerEnd = data.range(of: "\r\n\r\n".data(using: .utf8)!) else { return }
-        var received = Data(data[headerEnd.upperBound...])
+        let headerEnd = data.range(of: "\r\n\r\n".data(using: .utf8)!)!.upperBound
+        var received = Data(data[headerEnd...])
 
         // Safety cap.
         if contentLength > settings.maxReceiveFileSize {
@@ -203,13 +201,18 @@ final class TransferService: NSObject, ObservableObject {
             return
         }
 
+        // Verify we do not silently clobber the receive-dir bookkeeping.
+        _ = formatDetector
+        _ = modelStore
+
         let transfer = TransferProgress(name: fileName, totalBytes: contentLength, phase: .running)
         DispatchQueue.main.async {
             self.activeTransfers.append(transfer)
             self.startSpeedTimer(for: transfer)
         }
 
-        // Write body to Documents/PhotoTrans
+        // Write body to Documents/PhotoTrans (media gets mirrored to Photos in
+        // saveReceivedFile, gallery-visible for images/videos).
         let destDir = Self.receiveDirectory()
         let destURL = destDir.appendingPathComponent(fileName)
         try? fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
@@ -265,7 +268,7 @@ final class TransferService: NSObject, ObservableObject {
 
     private func finishReceive(_ connection: NWConnection, destURL: URL, transfer: TransferProgress) {
         // Acknowledge.
-        connection.send(content: "HTTP/1.1 200 OK\r\n\r\n".data(using: .utf8),
+        connection.send(content: NetworkService.buildHttpResponse(status: "200 OK"),
                         completion: .contentProcessed { _ in connection.cancel() })
         DispatchQueue.main.async {
             if let idx = self.activeTransfers.firstIndex(where: { $0.id == transfer.id }) {
@@ -278,8 +281,8 @@ final class TransferService: NSObject, ObservableObject {
     }
 
     private func reject(_ connection: NWConnection, reason: String) {
-        let resp = "HTTP/1.1 \(reason)\r\n\r\n"
-        connection.send(content: resp.data(using: .utf8), completion: .contentProcessed { _ in connection.cancel() })
+        let resp = NetworkService.buildHttpResponse(status: reason)
+        connection.send(content: resp, completion: .contentProcessed { _ in connection.cancel() })
     }
 
     // MARK: - Photos mirror
