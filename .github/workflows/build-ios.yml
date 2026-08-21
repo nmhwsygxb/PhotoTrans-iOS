@@ -7,7 +7,9 @@ on:
 
 jobs:
   build-ios:
-    runs-on: macos-14
+    # Xcode 16 (bundled with macos-15) can open the project format that the
+    # latest XcodeGen generates (objectVersion 77); macos-14/Xcode 15 cannot.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
