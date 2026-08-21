@@ -42,6 +42,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- 本地网络发现 (Bonjour) -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PhotoTrans 需要访问本地网络，以发现附近设备并传输照片/文件</string>
 	<key>NSBonjourServices</key>
@@ -49,8 +50,10 @@
 		<string>_phototrans._tcp</string>
 		<string>_phototrans._udp</string>
 	</array>
+	<!-- 二维码扫描 -->
 	<key>NSCameraUsageDescription</key>
 	<string>PhotoTrans 需要使用相机扫描二维码以连接对方设备</string>
+	<!-- 相册权限 -->
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>PhotoTrans 需要访问相册，以选择并发送照片</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
