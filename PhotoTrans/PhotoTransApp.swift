@@ -9,7 +9,7 @@ struct PhotoTransApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .preferredColorScheme(appState.settings.theme)
+                .preferredColorScheme(appState.settings.theme.colorScheme)
         }
     }
 }
