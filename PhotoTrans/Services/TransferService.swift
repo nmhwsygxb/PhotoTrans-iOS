@@ -118,10 +118,11 @@ final class TransferService: NSObject, ObservableObject {
         func sendNext() {
             guard !remaining.isEmpty else { return }
             let url = remaining.removeFirst()
+            let portValue = NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: PhotoTransProtocol.defaultTransferPort)!
             let connection = NWConnection(host: NWEndpoint.Host(host),
-                                          port: NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(PhotoTransProtocol.defaultTransferPort),
+                                          port: portValue,
                                           using: .tcp)
-            connection.stateUpdateHandler = { [weak self] state in
+            connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
                 guard let self else { return }
                 if case .ready = state {
                     self.sendFileOnConnection(connection, url: url) {
@@ -129,7 +130,7 @@ final class TransferService: NSObject, ObservableObject {
                     }
                 }
             }
-            connection.start(queue: .global(qos: .userInitiated))
+            connection.start(queue: DispatchQueue.global(qos: .userInitiated))
         }
         sendNext()
     }
