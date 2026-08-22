@@ -23,10 +23,24 @@ struct DeviceInfo: Identifiable, Hashable, Sendable {
     }
 }
 
-/// A device discovered on the LAN via Bonjour.
+/// A device discovered on the LAN via Bonjour or UDP beacon.
 struct NearDevice: Sendable {
     let name: String
     let endpoint: NWEndpoint
+    /// UDP beacon discovery flag
+    let isUDP: Bool
+}
+
+/// A device discovered via UDP beacon (compatible with Android / HarmonyOS).
+struct UdpBeaconDevice: Sendable, Identifiable {
+    let deviceId: String
+    let deviceName: String
+    let ip: String
+    let port: UInt16
+    let brand: String
+    var lastSeen: Date
+
+    var id: String { deviceId }
 }
 
 /// Constants for the PhotoTrans wire protocol.
@@ -41,6 +55,11 @@ enum PhotoTransProtocol {
     /// Default TCP port for file transfer, shared with Android / HarmonyOS
     /// (Android: WifiDirectTransport.TRANSFER_PORT = 47808).
     static let defaultTransferPort: UInt16 = 47808
+    // ── UDP 发现协议（与 Android / HarmonyOS 兼容）──
+    static let discoveryPort: UInt16 = 47809
+    static let beaconPrefix = "PT-BEACON"
+    static let beaconInterval: TimeInterval = 2.0
+    static let beaconPruneTimeout: TimeInterval = 8.0
 }
 
 /// Low-level networking abstraction over NWConnection / NWListener.
@@ -75,6 +94,8 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     @Published private(set) var isDiscovering = false
     @Published private(set) var localHostIP: String?
     @Published private(set) var port: UInt16 = PhotoTransProtocol.defaultTransferPort
+    /// UDP beacon discovered devices (compatible with Android / HarmonyOS).
+    @Published var udpDiscoveredDevices: [UdpBeaconDevice] = []
 
     var discoveredDevicesPublisher: AnyPublisher<[NearDevice], Never> {
         $discoveredDevices.eraseToAnyPublisher()
@@ -82,6 +103,10 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
 
     private var listener: NWListener?
     private var browser: NWBrowser?
+    /// UDP discovery beacon socket (compatible with Android/HarmonyOS).
+    private var udpSocket: nw_connection_t?
+    private var udpBeaconTimer: DispatchSourceTimer?
+    private let udpQueue = DispatchQueue(label: "com.phototrans.network.udp", qos: .userInitiated)
     private let sendQueue = DispatchQueue(label: "com.phototrans.network.send", qos: .userInitiated)
     private let connectionQueue = DispatchQueue(label: "com.phototrans.network.connections", qos: .userInitiated)
 
@@ -91,6 +116,9 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
 
     private var handshakeHandlers: [ObjectIdentifier: (Result<NWConnection, Error>) -> Void] = [:]
     private var pendingPeerNames: [ObjectIdentifier: String] = [:]
+    /// Buffered data remaining after the handshake line (PUT header, etc.)
+    /// that arrived in the same TCP segment as the PT-HI response.
+    private var pendingHandshakeData: [ObjectIdentifier: Data] = [:]
 
     override init() {
         super.init()
@@ -205,7 +233,7 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         guard !isDiscovering else { return }
         let parameters = NWParameters()
         let browser = NWBrowser(for: .bonjour(type: PhotoTransProtocol.serviceType,
-                                               domain: PhotoTransProtocol.serviceDomain),
+                                                domain: PhotoTransProtocol.serviceDomain),
                                 using: parameters)
         browser.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -221,7 +249,7 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             let devices = results.compactMap { result -> NearDevice? in
                 guard case .service(let name, _, _, _) = result.endpoint else { return nil }
-                return NearDevice(name: name, endpoint: result.endpoint)
+                return NearDevice(name: name, endpoint: result.endpoint, isUDP: false)
             }
             DispatchQueue.main.async {
                 self?.discoveredDevices = devices
@@ -229,6 +257,9 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         }
         browser.start(queue: connectionQueue)
         self.browser = browser
+
+        // Also start UDP beacon discovery (compatible with Android / HarmonyOS).
+        startUdpDiscovery()
     }
 
     func stopDiscovery() {
@@ -236,6 +267,178 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         browser = nil
         isDiscovering = false
         discoveredDevices = []
+        stopUdpDiscovery()
+    }
+
+    // MARK: - UDP Beacon Discovery (Android / HarmonyOS 兼容)
+
+    private var udpFd: Int32 = -1
+    private var udpReadSource: DispatchSourceRead?
+    private var udpBeaconTimer: DispatchSourceTimer?
+
+    private func startUdpDiscovery() {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return }
+        var reuse: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        var broadcast: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = CFSwapInt16HostToBig(PhotoTransProtocol.discoveryPort)
+        addr.sin_addr.s_addr = INADDR_ANY
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bindResult != 0 {
+            close(fd)
+            return
+        }
+
+        udpFd = fd
+
+        // 设置接收超时（避免 dispatch_source 阻塞）
+        var tv = timeval(tv_sec: 1, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        // 接收线程
+        let readSource = DispatchSource.makeReadSource(fileDescriptor: fd, queue: udpQueue)
+        readSource.setEventHandler { [weak self] in
+            self?.readUdpBeacon(fd)
+        }
+        readSource.resume()
+        udpReadSource = readSource
+
+        // 广播定时器
+        let timer = DispatchSource.makeTimerSource(queue: udpQueue)
+        timer.schedule(deadline: .now(), repeating: PhotoTransProtocol.beaconInterval)
+        timer.setEventHandler { [weak self] in
+            self?.sendUdpBeacon(fd)
+            self?.pruneUdpDevices()
+        }
+        timer.resume()
+        udpBeaconTimer = timer
+    }
+
+    private func stopUdpDiscovery() {
+        udpBeaconTimer?.cancel()
+        udpBeaconTimer = nil
+        udpReadSource?.cancel()
+        udpReadSource = nil
+        if udpFd >= 0 {
+            close(udpFd)
+            udpFd = -1
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.udpDiscoveredDevices = []
+        }
+    }
+
+    private func readUdpBeacon(_ fd: Int32) {
+        var addr = sockaddr_in()
+        var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        var buf = [UInt8](repeating: 0, count: 2048)
+        let n = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { addrPtr in
+                recvfrom(fd, &buf, buf.count, 0, addrPtr, &addrLen)
+            }
+        }
+        guard n > 0 else { return }
+        let text = String(bytes: buf[..<n], encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fromIp = String(cString: inet_ntoa(addr.sin_addr))
+        guard let dev = parseUdpBeacon(text, fromIp: fromIp) else { return }
+        if dev.deviceId == myDeviceId { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            var list = self.udpDiscoveredDevices
+            if let idx = list.firstIndex(where: { $0.deviceId == dev.deviceId }) {
+                list[idx].lastSeen = Date()
+            } else {
+                list.append(dev)
+            }
+            self.udpDiscoveredDevices = list
+        }
+    }
+
+    private func sendUdpBeacon(_ fd: Int32) {
+        let deviceName = UIDeviceHelper.current.modelName
+        let beacon = "\(PhotoTransProtocol.beaconPrefix)|\(myDeviceId)|\(deviceName)|\(port)|1.0|apple"
+        guard let data = beacon.data(using: .utf8) else { return }
+        // 向子网广播地址和全局广播地址发送
+        let targets = getBroadcastAddresses() + ["255.255.255.255"]
+        for target in targets {
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = CFSwapInt16HostToBig(PhotoTransProtocol.discoveryPort)
+            addr.sin_addr.s_addr = inet_addr(target)
+            data.withUnsafeBytes { bytes in
+                let raw = bytes.bindMemory(to: UInt8.self).baseAddress!
+                withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        sendto(fd, raw, data.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+            }
+        }
+    }
+
+    private func pruneUdpDevices() {
+        let now = Date()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let before = self.udpDiscoveredDevices.count
+            self.udpDiscoveredDevices = self.udpDiscoveredDevices.filter {
+                now.timeIntervalSince($0.lastSeen) < PhotoTransProtocol.beaconPruneTimeout
+            }
+        }
+    }
+
+    private var myDeviceId: String {
+        // 稳定设备 ID（基于设备名 + 端口）
+        "iOS-\(port)"
+    }
+
+    private func parseUdpBeacon(_ text: String, fromIp: String) -> UdpBeaconDevice? {
+        let parts = text.components(separatedBy: "|")
+        guard parts.count >= 6, parts[0] == PhotoTransProtocol.beaconPrefix else { return nil }
+        return UdpBeaconDevice(
+            deviceId: parts[1],
+            deviceName: parts[2],
+            ip: fromIp,
+            port: UInt16(parts[3]) ?? PhotoTransProtocol.defaultTransferPort,
+            brand: parts[5],
+            lastSeen: Date()
+        )
+    }
+
+    private func getBroadcastAddresses() -> [String] {
+        // 获取所有网络接口的广播地址
+        var addrs: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>? = nil
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return addrs }
+        var ptr = first
+        while true {
+            let info = ptr.pointee
+            if info.ifa_addr.pointee.sa_family == sa_family_t(AF_INET) {
+                let flags = Int32(info.ifa_flags)
+                if (flags & IFF_BROADCAST) != 0, let broad = info.ifa_dstaddr {
+                    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(broad, socklen_t(info.ifa_addr.pointee.sa_len),
+                                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+                    let addr = String(cString: host)
+                    if !addr.isEmpty && addr != "0.0.0.0" {
+                        addrs.append(addr)
+                    }
+                }
+            }
+            guard let next = info.ifa_next else { break }
+            ptr = next
+        }
+        freeifaddrs(ifaddr)
+        return addrs
     }
 
     // MARK: - Incoming connections
@@ -256,6 +459,12 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
 
     /// Set by TransferService to receive fully-handshaken connections with peer name.
     var handshakeCompleteHandler: ((NWConnection, String) -> Void)?
+
+    /// Returns any data that arrived after the handshake line (same TCP segment)
+    /// and was buffered by the line-based receiveHelloReply.
+    func takePendingData(for connection: NWConnection) -> Data? {
+        pendingHandshakeData.removeValue(forKey: ObjectIdentifier(connection))
+    }
 
     // MARK: - Outbound connections
 
@@ -355,33 +564,62 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
     private func receiveHelloReply(on connection: NWConnection,
                                    key: ObjectIdentifier,
                                    completion: @escaping (Result<NWConnection, Error>) -> Void) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            if let error {
-                self.finishHandshake(key: key, result: .failure(error), connection: connection)
-                return
-            }
-            guard let data = data,
-                  let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  line.hasPrefix(PhotoTransProtocol.handshakePrefix) else {
-                if isComplete {
+        var buffer = Data()
+
+        func readChunk() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, isComplete, error in
+                guard let self else { return }
+                if let error {
+                    self.finishHandshake(key: key, result: .failure(error), connection: connection)
+                    return
+                }
+                guard let chunk = data else {
+                    if isComplete {
+                        self.finishHandshake(key: key,
+                                             result: .failure(TransferError.handshakeFailed("Peer closed / bad handshake")),
+                                             connection: connection)
+                    } else {
+                        readChunk()
+                    }
+                    return
+                }
+                buffer.append(chunk)
+                // Look for the first newline to extract one complete line.
+                if let newlineIdx = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    let lineData = buffer[..<newlineIdx]
+                    // NWConnection.receive has already consumed the whole chunk;
+                    // save any data after the first line for the inbound handler.
+                    let remaining = buffer[newlineIdx.advanced(by: 1)...]
+                    if !remaining.isEmpty {
+                        self.pendingHandshakeData[key] = Data(remaining)
+                    }
+
+                    guard let line = String(data: lineData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                        line.hasPrefix(PhotoTransProtocol.handshakePrefix) else {
+                        self.finishHandshake(key: key,
+                                             result: .failure(TransferError.handshakeFailed("Bad handshake line")),
+                                             connection: connection)
+                        return
+                    }
+                    // Extract peer name from "PT-HI <name>" line
+                    let peerName = line
+                        .replacingOccurrences(of: PhotoTransProtocol.handshakePrefix, with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                    if !peerName.isEmpty {
+                        self.pendingPeerNames[key] = peerName
+                    }
+                    self.finishHandshake(key: key, result: .success(connection), connection: connection)
+                } else if isComplete {
                     self.finishHandshake(key: key,
                                          result: .failure(TransferError.handshakeFailed("Peer closed / bad handshake")),
                                          connection: connection)
                 } else {
-                    self.receiveHelloReply(on: connection, key: key, completion: completion)
+                    readChunk()
                 }
-                return
             }
-            // Extract peer name from "PT-HI <name>" line
-            let peerName = line
-                .replacingOccurrences(of: PhotoTransProtocol.handshakePrefix, with: "")
-                .trimmingCharacters(in: .whitespaces)
-            if !peerName.isEmpty {
-                self.pendingPeerNames[key] = peerName
-            }
-            self.finishHandshake(key: key, result: .success(connection), connection: connection)
         }
+        readChunk()
     }
 
     private func finishHandshake(key: ObjectIdentifier,
