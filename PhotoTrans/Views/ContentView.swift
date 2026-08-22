@@ -18,10 +18,10 @@ final class DeviceListModel: ObservableObject {
         let endpoint: NWEndpoint
     }
 
-    private let networkService: NetworkServiceProtocol
+    private let networkService: any NetworkServiceProtocol
     private var cancellables = Set<AnyCancellable>()
 
-    init(networkService: NetworkServiceProtocol) {
+    init(networkService: any NetworkServiceProtocol) {
         self.networkService = networkService
         // The protocol exposes device changes through a type-erased publisher;
         // re-reading the published value on any change is cheap.
@@ -43,7 +43,7 @@ final class DeviceListModel: ObservableObject {
         }
     }
 
-    private func mergeDevices(from ns: NetworkServiceProtocol) {
+    private func mergeDevices(from ns: any NetworkServiceProtocol) {
         var rows = ns.discoveredDevices.map {
             NearDeviceRow(name: $0.name, endpoint: $0.endpoint)
         }
@@ -51,7 +51,7 @@ final class DeviceListModel: ObservableObject {
         if let ns = ns as? NetworkService {
             for udp in ns.udpDiscoveredDevices {
                 let host = NWEndpoint.Host(udp.ip)
-                let port = NWEndpoint.Port(rawValue: udp.port) ?? NWEndpoint.Port(PhotoTransProtocol.defaultTransferPort)
+                let port = NWEndpoint.Port(rawValue: udp.port) ?? NWEndpoint.Port(rawValue: PhotoTransProtocol.defaultTransferPort)!
                 let endpoint = NWEndpoint.hostPort(host: host, port: port)
                 let name = "\(udp.deviceName) (UDP)"
                 // Avoid duplicates
