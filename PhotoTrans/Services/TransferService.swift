@@ -26,6 +26,8 @@ final class TransferService: NSObject, ObservableObject {
     private var lastSample: [UUID: (Date, Int64)] = [:]
     private var latestConnection: NWConnection?
     private var peerName: String?
+    /// Per-connection receive buffer for assembling HTTP headers across TCP segments.
+    private var receiveBuffers: [ObjectIdentifier: Data] = [:]
 
     override init() {
         fatalError("use init(networkService:modelStore:formatDetector:)")
@@ -66,7 +68,7 @@ final class TransferService: NSObject, ObservableObject {
                 // Build and send the HTTP PUT request frame (compatible with
                 // Android / 互传联盟). Delegated to NetworkService for reuse.
                 let headerData = NetworkService.buildHttpPutHeader(fileName: url.lastPathComponent,
-                                                                   contentLength: transfer.totalBytes)
+                                                                    contentLength: transfer.totalBytes)
                 connection.send(content: headerData, completion: .contentProcessed { [weak self] error in
                     guard let self else { return }
                     if let error {
@@ -109,10 +111,100 @@ final class TransferService: NSObject, ObservableObject {
     }
 
     /// Send every URL the user picked from the document / photo picker.
-    func sendFiles(urls: [URL]) {
-        DispatchQueue.main.async {
-            for url in urls {
-                self.sendFile(url: url)
+    /// For each file, creates a new connection (compatible with Android/HarmonyOS
+    /// receivers that close the socket after one PUT).
+    func sendFiles(urls: [URL], host: String, port: UInt16) {
+        var remaining = Array(urls)
+        func sendNext() {
+            guard !remaining.isEmpty else { return }
+            let url = remaining.removeFirst()
+            let connection = NWConnection(host: NWEndpoint.Host(host),
+                                          port: NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(PhotoTransProtocol.defaultTransferPort),
+                                          using: .tcp)
+            connection.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                if case .ready = state {
+                    self.sendFileOnConnection(connection, url: url) {
+                        sendNext()
+                    }
+                }
+            }
+            connection.start(queue: .global(qos: .userInitiated))
+        }
+        sendNext()
+    }
+
+    /// Send one file on a freshly-connected socket (no prior handshake needed —
+    /// the connection is new so the receiver will PT-HI handshake first).
+    private func sendFileOnConnection(_ connection: NWConnection, url: URL, completion: @escaping () -> Void) {
+        let fileName = url.lastPathComponent
+        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        let transfer = TransferProgress(name: fileName, totalBytes: fileSize, phase: .connecting)
+        DispatchQueue.main.async { self.activeTransfers.append(transfer) }
+
+        // 1. Send PT-HI handshake (same connection, iOS receiver expects this)
+        let deviceName = UIDeviceHelper.current.modelName
+        let handshakeLine = "\(PhotoTransProtocol.handshakePrefix) \(deviceName)\n"
+        connection.send(content: Data(handshakeLine.utf8), completion: .contentProcessed { error in
+            if let error { self.failTransfer(transfer, error: error); return }
+            // 2. Read remote PT-HI reply
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, _, _ in
+                // ignore the reply; just proceed to send the file
+                self.streamFileOnConnection(connection, url: url, transfer: transfer, completion: completion)
+            }
+        })
+    }
+
+    /// Stream file body and read the HTTP response.
+    private func streamFileOnConnection(_ connection: NWConnection, url: URL,
+                                         transfer: TransferProgress, completion: @escaping () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+
+                let headerData = NetworkService.buildHttpPutHeader(fileName: url.lastPathComponent,
+                                                                    contentLength: transfer.totalBytes)
+                connection.send(content: headerData, completion: .contentProcessed { [weak self] error in
+                    guard let self else { return }
+                    if let error { self.failTransfer(transfer, error: error); return }
+                    self.startSpeedTimer(for: transfer)
+                    let chunk = self.settings.transferChunkSize
+                    var sent: Int64 = 0
+                    while true {
+                        let data = handle.readData(ofLength: chunk)
+                        if data.isEmpty { break }
+                        connection.send(content: data, completion: .contentProcessed { sendError in
+                            if let sendError { self.failTransfer(transfer, error: sendError); return }
+                            sent += Int64(data.count)
+                            DispatchQueue.main.async {
+                                if let idx = self.activeTransfers.firstIndex(where: { $0.id == transfer.id }) {
+                                    self.activeTransfers[idx].transferredBytes = sent
+                                    self.activeTransfers[idx].phase = .running
+                                }
+                            }
+                            self.lastSample[transfer.id] = (Date(), sent)
+                        })
+                        if transfer.totalBytes > 0 && sent >= transfer.totalBytes { break }
+                    }
+                    // Read response
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, _, _ in
+                        guard let self else { return }
+                        // Check response status (200 OK expected)
+                        let ok = data?.isEmpty == false
+                        if ok {
+                            self.completeTransfer(transfer)
+                        } else {
+                            self.failTransfer(transfer, error: TransferError.writeFailed)
+                        }
+                        // Close the per-file connection
+                        connection.cancel()
+                        completion()
+                    }
+                })
+            } catch {
+                self.failTransfer(transfer, error: error)
+                completion()
             }
         }
     }
@@ -141,30 +233,50 @@ final class TransferService: NSObject, ObservableObject {
 
     private func handleInbound(_ connection: NWConnection) {
         receiveQueue.async { [weak self] in
-            self?.readRequestLine(connection)
+            guard let self else { return }
+            let key = ObjectIdentifier(connection)
+            // Check for data that arrived with the handshake (same TCP segment).
+            if let pending = self.networkService.takePendingData(for: connection) {
+                self.receiveBuffers[key] = pending
+            }
+            self.readRequestLine(connection)
         }
     }
 
     private func readRequestLine(_ connection: NWConnection) {
+        let key = ObjectIdentifier(connection)
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, error in
             guard let self else { return }
             if let error { connection.cancel(); return }
             guard let data, !data.isEmpty else { connection.cancel(); return }
 
-            // Assemble until we find an empty line (i.e. header terminator).
-            try? self.parseHeader(data, connection: connection)
+            // Accumulate into the per-connection buffer.
+            var buf = self.receiveBuffers.removeValue(forKey: key) ?? Data()
+            buf.append(data)
+
+            // Try to find the header terminator in the accumulated buffer.
+            guard let headerStr = String(data: buf, encoding: .utf8),
+                  let headerRange = headerStr.range(of: "\r\n\r\n") else {
+                // Incomplete header; save buffer and keep reading.
+                self.receiveBuffers[key] = buf
+                self.readRequestLine(connection)
+                return
+            }
+
+            // Found complete header – extract header text and body bytes.
+            let headerEnd = headerStr.utf8.distance(from: headerStr.startIndex, to: headerRange.upperBound)
+            let bodyPrefix = buf[headerEnd...]
+            try? self.parseHeader(Data(String(headerStr[..<headerRange.lowerBound]).utf8),
+                                  bodyPrefix: Data(bodyPrefix), connection: connection)
         }
     }
 
-    private func parseHeader(_ data: Data, connection: NWConnection) {
-        guard let headerStr = String(data: data, encoding: .utf8),
-              let headerRange = headerStr.range(of: "\r\n\r\n") else {
-            // Incomplete header; keep reading.
-            readRequestLine(connection)
+    private func parseHeader(_ headerData: Data, bodyPrefix: Data, connection: NWConnection) {
+        guard let headerStr = String(data: headerData, encoding: .utf8) else {
+            reject(connection, reason: "400 Bad Request")
             return
         }
-        let head = String(headerStr[..<headerRange.lowerBound])
-        let lines = head.components(separatedBy: "\r\n")
+        let lines = headerStr.components(separatedBy: "\r\n")
         guard let requestLine = lines.first, requestLine.hasPrefix("PUT ") else {
             reject(connection, reason: "400 Bad Request")
             return
@@ -173,7 +285,10 @@ final class TransferService: NSObject, ObservableObject {
             .replacingOccurrences(of: "PUT ", with: "")
             .replacingOccurrences(of: " HTTP/1.1", with: "")
             .trimmingCharacters(in: .whitespaces)
-        let fileName = path.removingPercentEncoding ?? path
+        // Sanitize: prevent path traversal by stripping slashes and dots.
+        let fileName = (path.removingPercentEncoding ?? path)
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "..", with: "_")
         guard !fileName.isEmpty, fileName != "/" else {
             reject(connection, reason: "400 Bad Request")
             return
@@ -190,10 +305,6 @@ final class TransferService: NSObject, ObservableObject {
             reject(connection, reason: "411 Length Required")
             return
         }
-
-        // Determine how many bytes of the body arrived with the header.
-        let headerEnd = data.range(of: "\r\n\r\n".data(using: .utf8)!)!.upperBound
-        var received = Data(data[headerEnd...])
 
         // Safety cap.
         if contentLength > settings.maxReceiveFileSize {
@@ -212,11 +323,11 @@ final class TransferService: NSObject, ObservableObject {
         let destDir = Self.receiveDirectory()
         let destURL = destDir.appendingPathComponent(fileName)
         try? fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
-        fileManager.createFile(atPath: destURL.path, contents: received)
-        var written = Int64(received.count)
+        fileManager.createFile(atPath: destURL.path, contents: bodyPrefix)
+        var written = Int64(bodyPrefix.count)
         self.lastSample[transfer.id] = (Date(), written)
 
-        receiveBody(connection, remaining: contentLength - Int64(received.count),
+        receiveBody(connection, remaining: contentLength - Int64(bodyPrefix.count),
                     destURL: destURL, transfer: transfer, written: written)
     }
 
