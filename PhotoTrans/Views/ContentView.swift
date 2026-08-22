@@ -29,12 +29,39 @@ final class DeviceListModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.nearDevices = self.networkService.discoveredDevices.map {
-                    NearDeviceRow(name: $0.name, endpoint: $0.endpoint)
-                }
-                self.isSearching = !self.nearDevices.isEmpty
+                self.mergeDevices(from: networkService)
             }
             .store(in: &cancellables)
+
+        // Also observe UDP beacon discovered devices (Android / HarmonyOS).
+        // Use KVO-compatible approach: poll on main thread when discovery is active.
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self, let ns = networkService as? NetworkService else { return }
+            if ns.isDiscovering {
+                self.mergeDevices(from: ns)
+            }
+        }
+    }
+
+    private func mergeDevices(from ns: NetworkServiceProtocol) {
+        var rows = ns.discoveredDevices.map {
+            NearDeviceRow(name: $0.name, endpoint: $0.endpoint)
+        }
+        // Add UDP beacon devices (compatible with Android / HarmonyOS).
+        if let ns = ns as? NetworkService {
+            for udp in ns.udpDiscoveredDevices {
+                let host = NWEndpoint.Host(udp.ip)
+                let port = NWEndpoint.Port(rawValue: udp.port) ?? NWEndpoint.Port(PhotoTransProtocol.defaultTransferPort)
+                let endpoint = NWEndpoint.hostPort(host: host, port: port)
+                let name = "\(udp.deviceName) (UDP)"
+                // Avoid duplicates
+                if !rows.contains(where: { $0.name == name }) {
+                    rows.append(NearDeviceRow(name: name, endpoint: endpoint))
+                }
+            }
+        }
+        self.nearDevices = rows
+        self.isSearching = !rows.isEmpty
     }
 
     func refresh() {
@@ -103,10 +130,12 @@ struct ContentView: View {
             .sheet(isPresented: $showDocumentPicker) {
                 DocumentPicker { urls in
                     let connected = peerHost != nil
-                    if connected {
+                    if connected, let host = peerHost {
                         pickedURLs = urls
-                        appState.transferService.sendFiles(urls: urls)
+                        appState.transferService.sendFiles(urls: urls, host: host, port: peerPort)
                         toast = "已发送 \(urls.count) 个文件"
+                    } else if connected {
+                        toast = "未获取到对端地址"
                     } else {
                         toast = "请先连接设备"
                     }
