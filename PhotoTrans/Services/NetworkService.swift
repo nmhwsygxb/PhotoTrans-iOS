@@ -233,7 +233,7 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         guard !isDiscovering else { return }
         let parameters = NWParameters()
         let browser = NWBrowser(for: .bonjour(type: PhotoTransProtocol.serviceType,
-                                                domain: PhotoTransProtocol.serviceDomain),
+                                               domain: PhotoTransProtocol.serviceDomain),
                                 using: parameters)
         browser.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -274,7 +274,6 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
 
     private var udpFd: Int32 = -1
     private var udpReadSource: DispatchSourceRead?
-    private var udpBeaconTimer: DispatchSourceTimer?
 
     private func startUdpDiscovery() {
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
