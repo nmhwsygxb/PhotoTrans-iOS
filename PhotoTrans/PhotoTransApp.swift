@@ -18,7 +18,7 @@ struct PhotoTransApp: App {
 /// the transfer / device-discovery flows so that SwiftUI views stay thin.
 final class AppState: ObservableObject {
     @Published private(set) var settings = AppSettings()
-    @Published private(set) var networkService: NetworkServiceProtocol
+    @Published private(set) var networkService: any NetworkServiceProtocol
     @Published var transferService: TransferService
     @Published var deviceList: DeviceListModel
 
