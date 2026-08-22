@@ -3,7 +3,11 @@ name: Build iOS App
 on:
   push:
     branches: [ main ]
+    tags: [ 'ios-v*' ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-ios:
@@ -18,11 +22,6 @@ jobs:
 
       - name: Generate project
         run: xcodegen --spec project.yml
-
-      - name: Debug - list project files
-        run: |
-          ls -la
-          find . -name "*.xcodeproj" -type d 2>/dev/null || echo "No .xcodeproj"
 
       - name: Build unsigned app
         run: |
@@ -41,7 +40,30 @@ jobs:
           cp -R "$APP_PATH" build/ipa/Payload/
           cd build/ipa && zip -r ../../PhotoTrans-unsigned.ipa Payload
 
-      - name: Upload IPA
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/ios-v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${{ github.ref_name }}"
+          echo "Creating release for tag: $TAG"
+          API_JSON=$(printf '{"tag_name":"%s","target_commitish":"main","name":"%s","body":"PhotoTrans iOS App (unsigned) - %s\\n\\nNote: .app inside zip, needs side-loading with developer certificate","draft":false,"prerelease":false}' "$TAG" "$TAG" "$TAG")
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/releases \
+            -d "$API_JSON")
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
+          echo "Release ID: $RELEASE_ID"
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/zip" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=PhotoTrans-iOS-v1.0.0.ipa" \
+            --data-binary @PhotoTrans-unsigned.ipa
+
+      - name: Upload IPA artifact
+        if: "!startsWith(github.ref, 'refs/tags/ios-v')"
         uses: actions/upload-artifact@v4
         with:
           name: PhotoTrans-unsigned-ipa
