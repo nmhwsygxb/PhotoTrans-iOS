@@ -32,15 +32,19 @@ struct NearDevice: Sendable {
 }
 
 /// A device discovered via UDP beacon (compatible with Android / HarmonyOS).
-struct UdpBeaconDevice: Sendable, Identifiable {
-    let deviceId: String
+struct UdpBeaconDevice: Sendable, Identifiable, Equatable {
+    let deviceIdentity: String  // "deviceName|ip"
     let deviceName: String
     let ip: String
     let port: UInt16
     let brand: String
     var lastSeen: Date
 
-    var id: String { deviceId }
+    var id: String { deviceIdentity }
+
+    static func == (lhs: UdpBeaconDevice, rhs: UdpBeaconDevice) -> Bool {
+        lhs.deviceIdentity == rhs.deviceIdentity
+    }
 }
 
 /// Constants for the PhotoTrans wire protocol.
@@ -349,11 +353,11 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         let text = String(bytes: buf[..<n], encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let fromIp = String(cString: inet_ntoa(addr.sin_addr))
         guard let dev = parseUdpBeacon(text, fromIp: fromIp) else { return }
-        if dev.deviceId == myDeviceId { return }
+        if dev.deviceIdentity == myDeviceIdentity { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             var list = self.udpDiscoveredDevices
-            if let idx = list.firstIndex(where: { $0.deviceId == dev.deviceId }) {
+            if let idx = list.firstIndex(where: { $0.deviceIdentity == dev.deviceIdentity }) {
                 list[idx].lastSeen = Date()
             } else {
                 list.append(dev)
@@ -364,7 +368,9 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
 
     private func sendUdpBeacon(_ fd: Int32) {
         let deviceName = UIDeviceHelper.current.modelName
-        let beacon = "\(PhotoTransProtocol.beaconPrefix)|\(myDeviceId)|\(deviceName)|\(port)|1.0|apple"
+        let localIp = localHostIP ?? "0.0.0.0"
+        // 统一格式: PT-BEACON|<deviceName>|<brand>|<ip>|<port>|
+        let beacon = "\(PhotoTransProtocol.beaconPrefix)|\(deviceName)|apple|\(localIp)|\(port)|"
         guard let data = beacon.data(using: .utf8) else { return }
         // 向子网广播地址和全局广播地址发送
         let targets = getBroadcastAddresses() + ["255.255.255.255"]
@@ -395,20 +401,25 @@ final class NetworkService: NSObject, NetworkServiceProtocol {
         }
     }
 
-    private var myDeviceId: String {
-        // 稳定设备 ID（基于设备名 + 端口）
-        "iOS-\(port)"
+    private var myDeviceIdentity: String {
+        "\(UIDeviceHelper.current.modelName)|\(localHostIP ?? "")"
     }
 
     private func parseUdpBeacon(_ text: String, fromIp: String) -> UdpBeaconDevice? {
         let parts = text.components(separatedBy: "|")
-        guard parts.count >= 6, parts[0] == PhotoTransProtocol.beaconPrefix else { return nil }
+        // 统一格式: PT-BEACON|<deviceName>|<brand>|<ip>|<port>|
+        guard parts.count >= 5, parts[0] == PhotoTransProtocol.beaconPrefix else { return nil }
+        let deviceName = parts[1]
+        let brand = parts[2]
+        let ip = parts[3].isEmpty ? fromIp : parts[3]
+        let port = UInt16(parts[4]) ?? PhotoTransProtocol.defaultTransferPort
+        let identity = "\(deviceName)|\(ip)"
         return UdpBeaconDevice(
-            deviceId: parts[1],
-            deviceName: parts[2],
-            ip: fromIp,
-            port: UInt16(parts[3]) ?? PhotoTransProtocol.defaultTransferPort,
-            brand: parts[5],
+            deviceIdentity: identity,
+            deviceName: deviceName,
+            ip: ip,
+            port: port,
+            brand: brand,
             lastSeen: Date()
         )
     }
